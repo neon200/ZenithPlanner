@@ -1,0 +1,17 @@
+# --- Secrets ---
+# Ignore the file containing environment variables and API keys
+.env
+
+# --- Python ---
+# Ignore the virtual environment folder
+venv/
+/venv/
+*.venv
+
+# Ignore Python cache files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+#` file contains your secret keys (API keys, database URLs). **This file must never be published to GitHub.** We also want to exclude temporary files and virtual environment folders.

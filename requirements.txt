@@ -1,0 +1,11 @@
+# requirements.txt
+
+google-generativeai
+python-dotenv
+python-dateutil
+streamlit
+tabulate
+streamlit-oauth
+pytz
+psycopg2-binary
+SQLAlchemy
