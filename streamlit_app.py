@@ -86,7 +86,7 @@ def main_app(user):
             st.session_state.clear()
             st.rerun()
         st.divider()
-        st.page_link("https://github.com/shashidhar-roy/zenith-planner", label="View on GitHub", icon="⭐")
+        st.page_link("https://github.com/neon200/ZenithPlanner", label="View on GitHub", icon="⭐")
 
     st.title("🧠 ZenithPlanner Dashboard")
     st.markdown("Your intelligent assistant to achieve peak productivity. Just type what you need to do!")
