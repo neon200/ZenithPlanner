@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from dateutil.relativedelta import relativedelta
 import pytz
 from tabulate import tabulate
-import requests # Import the new library
+import requests
 
 # --- LLM and Agent Imports ---
 from langchain import hub
@@ -75,24 +75,18 @@ class TaskManager:
     def add_task_from_natural_language(self, user_input: str, user_id: int) -> str:
         if not user_input: return "❌ Please enter a task description."
         
-        # --- THE FIX: Call external API for authoritative time ---
         try:
             response = requests.get("https://timeapi.io/api/time/current/zone?timeZone=Asia/Kolkata")
-            response.raise_for_status()  # Raise an exception for bad status codes (4xx or 5xx)
+            response.raise_for_status()
             time_data = response.json()
-            # The API gives a dateTime string like "2024-06-13T19:55:03.473432"
-            # We can parse this and format it nicely for the LLM
             current_datetime_obj = datetime.fromisoformat(time_data['dateTime'])
             current_time_str = current_datetime_obj.strftime("%A, %Y-%m-%d %H:%M:%S %Z")
             print(f"✅ Successfully fetched time from API: {current_time_str}")
         except requests.exceptions.RequestException as e:
             print(f"❌ Could not fetch time from API: {e}. Falling back to system time.")
-            # Fallback to the previous method if the API fails
             current_time_str = datetime.now(self.ist).strftime("%A, %Y-%m-%d %H:%M:%S %Z")
         
         prompt_with_context = f"Current time is {current_time_str}. User's request: '{user_input}'"
-        # --- END FIX ---
-
         return self.agent.invoke(prompt_with_context, user_id, intent='create')
 
     def get_summary_from_agent(self, user_id: int) -> str:
@@ -141,17 +135,32 @@ class TaskManager:
         countdown_tasks.sort(key=lambda x: x['due_time'])
         return countdown_tasks
 
+    # --- THE FIX: Simplify the logic and trust the LLM's full ISO output ---
     def create_task_from_agent(self, user_id: int, title: str, due_time: str | None, category: str, is_recurring: bool, repeat_pattern: str | None, user_notes: str | None) -> str:
         task_data = locals()
         task_data.pop('self'); task_data.pop('user_id')
+
         if task_data.get('due_time'):
             try:
-                due_time_obj = datetime.fromisoformat(task_data['due_time']).astimezone(self.ist)
+                # The LLM, given proper context, will provide a full ISO 8601 string.
+                # We simply need to parse it and make it timezone-aware for our DB.
+                due_time_obj = datetime.fromisoformat(task_data['due_time'])
+                
+                # If the LLM provides a naive datetime (no timezone), assume it's in our target timezone.
+                if due_time_obj.tzinfo is None:
+                    due_time_obj = self.ist.localize(due_time_obj)
+                else:
+                    # Otherwise, convert it to our target timezone to be safe.
+                    due_time_obj = due_time_obj.astimezone(self.ist)
+                
                 task_data['due_time'] = due_time_obj.isoformat()
-            except (ValueError, TypeError):
+            except (ValueError, TypeError) as e:
+                print(f"Error parsing due_time from agent: {task_data['due_time']}. Error: {e}")
                 return f"Error: The AI provided a due_time '{task_data['due_time']}' that could not be understood."
+        
         self.db.add_task(task_data, user_id)
         return f"Successfully created task titled '{title}'."
+    # --- END FIX ---
 
     def get_daily_summary_tasks(self, user_id: int) -> str:
         all_tasks = self.db.get_tasks(user_id=user_id, completed=None)
