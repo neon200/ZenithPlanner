@@ -23,6 +23,8 @@ if IS_DEPLOYED:
     GOOGLE_CLIENT_SECRET = st.secrets.get("GOOGLE_CLIENT_SECRET")
     DATABASE_URL = st.secrets.get("DATABASE_URL")
     REDIRECT_URI = st.secrets.get("REDIRECT_URI")
+    # Add this line for the cookie password
+    COOKIE_PASSWORD = st.secrets.get("COOKIE_PASSWORD") 
 else:
     # We are running locally, so load secrets from .env file
     load_dotenv()
@@ -31,21 +33,23 @@ else:
     GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
     DATABASE_URL = os.getenv("DATABASE_URL")
     REDIRECT_URI = os.getenv("REDIRECT_URI")
+    # Add this line for the cookie password
+    COOKIE_PASSWORD = os.getenv("COOKIE_PASSWORD")
 
 # --- VALIDATION ---
 # Ensure that all necessary configurations are loaded.
-if not all([GEMINI_API_KEY, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, DATABASE_URL, REDIRECT_URI]):
+# Update the validation list to include COOKIE_PASSWORD
+if not all([GEMINI_API_KEY, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, DATABASE_URL, REDIRECT_URI, COOKIE_PASSWORD]):
     # Determine which secrets are missing for a helpful error message
-    secrets_to_check = ["GEMINI_API_KEY", "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "DATABASE_URL", "REDIRECT_URI"]
+    # Update the secrets to check list
+    secrets_to_check = ["GEMINI_API_KEY", "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "DATABASE_URL", "REDIRECT_URI", "COOKIE_PASSWORD"]
     missing_secrets = []
     
     for secret in secrets_to_check:
-        if IS_DEPLOYED:
-            if not st.secrets.get(secret):
-                missing_secrets.append(secret)
-        else:
-            if not os.getenv(secret):
-                missing_secrets.append(secret)
+        # Check based on the environment
+        env_value = st.secrets.get(secret) if IS_DEPLOYED else os.getenv(secret)
+        if not env_value:
+            missing_secrets.append(secret)
     
     error_message = f"Missing required secrets: {', '.join(missing_secrets)}. "
     if IS_DEPLOYED:

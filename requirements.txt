@@ -13,4 +13,5 @@ langchain
 langchain-google-genai
 langchain-core
 langchainhub
-requests # Add this line
+requests
+streamlit-cookies-manager

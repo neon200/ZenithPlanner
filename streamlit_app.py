@@ -1,6 +1,11 @@
 # ZenithPlanner/streamlit_app.py
 
 import streamlit as st
+
+# --- This MUST be the first Streamlit command ---
+st.set_page_config(page_title="ZenithPlanner", page_icon="🧠", layout="wide")
+
+# Now import everything else
 from streamlit_oauth import OAuth2Component
 from datetime import datetime
 from dateutil import parser
@@ -8,19 +13,31 @@ import base64
 import json
 import pytz
 import time
+from streamlit_cookies_manager import EncryptedCookieManager
 
 # Import your application's modules
-from config import GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, REDIRECT_URI
+from config import GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, REDIRECT_URI, COOKIE_PASSWORD
 from task_manager import TaskManager
 from db.models import TaskDatabase
 
-# --- 1. AUTHENTICATION AND CONFIGURATION (Unchanged) ---
+
+# --- Initialize Cookie Manager after page config ---
+cookies = EncryptedCookieManager(
+    password=COOKIE_PASSWORD,
+)
+if not cookies.ready():
+    # Wait for the cookie manager to be ready before continuing.
+    st.stop()
+
+
+# --- 1. AUTHENTICATION AND CONFIGURATION ---
 AUTHORIZE_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 SCOPE = "openid https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile"
 oauth2 = OAuth2Component(client_id=GOOGLE_CLIENT_ID, client_secret=GOOGLE_CLIENT_SECRET, authorize_endpoint=AUTHORIZE_URL, token_endpoint=TOKEN_URL)
 
-# --- 2. HELPER FUNCTIONS (Unchanged) ---
+
+# --- 2. HELPER FUNCTIONS ---
 def render_dynamic_time_header():
     ist = pytz.timezone('Asia/Kolkata')
     now_ist = datetime.now(ist)
@@ -33,7 +50,8 @@ def render_dynamic_time_header():
 
 def decode_id_token(token_dict):
     try:
-        id_token = token_dict['id_token']
+        token_data_to_decode = token_dict.get('token', token_dict)
+        id_token = token_data_to_decode['id_token']
         payload_b64 = id_token.split('.')[1]
         payload_b64 += '=' * (-len(payload_b64) % 4)
         payload_json = base64.b64decode(payload_b64).decode('utf-8')
@@ -43,8 +61,7 @@ def decode_id_token(token_dict):
         return None
 
 def format_time_left(delta):
-    if delta.total_seconds() < 0:
-        return "Overdue"
+    if delta.total_seconds() < 0: return "Overdue"
     days = delta.days
     hours, rem = divmod(delta.seconds, 3600)
     minutes, _ = divmod(rem, 60)
@@ -53,10 +70,10 @@ def format_time_left(delta):
     if minutes > 0: return f"{minutes}m left"
     return "Due now"
 
-# --- 3. MAIN APPLICATION UI (Refactored) ---
+
+# --- 3. MAIN APPLICATION UI ---
 def main_app(user):
-    st.set_page_config(page_title="ZenithPlanner", page_icon="🧠", layout="wide")
-    
+    # This function now correctly assumes the page config is already set at the top level.
     if 'task_manager' not in st.session_state:
         db_instance = TaskDatabase()
         st.session_state.task_manager = TaskManager(db_instance)
@@ -71,6 +88,7 @@ def main_app(user):
         st.info(f"Logged in as:\n_{user.get('email')}_")
         if st.button("Logout", use_container_width=True):
             st.session_state.clear()
+            del cookies['token']
             st.rerun()
         st.divider()
         st.page_link("https://github.com/neon200/ZenithPlanner", label="View on GitHub", icon="⭐")
@@ -131,7 +149,6 @@ def main_app(user):
         else:
             for event in countdown_events:
                  with st.container(border=True):
-                    # --- THE FIX: Use columns to add a delete button ---
                     metric_col, button_col = st.columns([0.85, 0.15])
                     with metric_col:
                         st.metric(
@@ -141,13 +158,11 @@ def main_app(user):
                             delta_color="off"
                         )
                     with button_col:
-                        # Add a top margin to better align the button with the metric
                         st.markdown('<div style="margin-top: 25px;"></div>', unsafe_allow_html=True)
                         if st.button("🗑️", key=f"delete_event_{event['id']}", help="Delete event"):
                             manager.delete_task(event['id'], db_user_id)
                             st.toast(f"Deleted event '{event['title']}'")
                             st.rerun()
-                    # --- END FIX ---
 
     st.divider()
     st.header("📊 AI-Powered Digest")
@@ -165,39 +180,54 @@ def main_app(user):
             st.rerun()
 
 
-# --- 4. LOGIN AND ROUTING LOGIC (Unchanged) ---
+# --- 4. LOGIN AND ROUTING LOGIC ---
 def show_login_page():
-    st.set_page_config(page_title="ZenithPlanner Login", layout="centered")
+    """Renders the login page and handles the OAuth button click."""
     st.markdown("""<style>div[data-testid="stVerticalBlock"] div[data-testid="stButton"] button {width: 100%; height: 50px; font-size: 20px;}</style>""", unsafe_allow_html=True)
     st.title("Welcome to ZenithPlanner 🧠")
     st.write("Your intelligent assistant to achieve peak productivity.")
     st.write("")
     _, col2, _ = st.columns([1, 2, 1])
     with col2:
-        return oauth2.authorize_button(name="Login with Google", icon="https://www.google.com/favicon.ico", redirect_uri=REDIRECT_URI, scope=SCOPE, use_container_width=True)
+        result = oauth2.authorize_button(
+            name="Login with Google",
+            icon="https://www.google.com/favicon.ico",
+            redirect_uri=REDIRECT_URI,
+            scope=SCOPE,
+            use_container_width=True
+        )
+        if result:
+            cookies['token'] = json.dumps(result)
+            st.rerun()
 
 def main():
-    if not st.session_state.get('token'):
-        token = show_login_page()
-        if token:
-            st.session_state.token = token
-            st.rerun()
+    """Main application logic using cookies for persistent sessions."""
+    if 'token' not in cookies:
+        show_login_page()
     else:
-        if not st.session_state.get('user'):
-            user_info_from_token = decode_id_token(st.session_state.token['token'])
-            if user_info_from_token:
-                st.session_state.user = user_info_from_token
+        token = json.loads(cookies['token'])
+        
+        if 'user' not in st.session_state:
+            user_info = decode_id_token(token)
+            if user_info:
+                st.session_state.user = user_info
                 db_instance = TaskDatabase()
-                db_user = db_instance.get_or_create_user(email=st.session_state.user['email'], name=st.session_state.user.get('name'))
+                db_user = db_instance.get_or_create_user(
+                    email=st.session_state.user['email'],
+                    name=st.session_state.user.get('name')
+                )
                 st.session_state.db_user = dict(db_user)
-                st.rerun()
             else:
-                st.error("Could not validate your session. Please log in again.")
+                st.error("Session is invalid. Please log in again.")
+                del cookies['token']
                 time.sleep(2)
-                st.session_state.clear()
                 st.rerun()
-        if st.session_state.get('db_user'):
+        
+        if 'db_user' in st.session_state:
             main_app(st.session_state.user)
+        else:
+            # This can happen if the token was invalid and cleared.
+            show_login_page()
 
 if __name__ == '__main__':
     main()
