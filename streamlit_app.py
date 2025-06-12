@@ -70,6 +70,30 @@ def format_time_left(delta):
     if minutes > 0: return f"{minutes}m left"
     return "Due now"
 
+def handle_logout():
+    """Handle logout process with proper cleanup"""
+    try:
+        # Clear all session state
+        for key in list(st.session_state.keys()):
+            del st.session_state[key]
+        
+        # Clear the cookie
+        if 'token' in cookies:
+            del cookies['token']
+        
+        # Force cookie manager to save changes
+        cookies.save()
+        
+        st.success("Logged out successfully!")
+        time.sleep(1)
+        st.rerun()
+        
+    except Exception as e:
+        st.error(f"Error during logout: {e}")
+        # Force clear everything anyway
+        st.session_state.clear()
+        st.rerun()
+
 
 # --- 3. MAIN APPLICATION UI ---
 def main_app(user):
@@ -86,10 +110,11 @@ def main_app(user):
     with st.sidebar:
         st.title(f"Welcome, {user.get('given_name', 'User')}!")
         st.info(f"Logged in as:\n_{user.get('email')}_")
-        if st.button("Logout", use_container_width=True):
-            st.session_state.clear()
-            del cookies['token']
-            st.rerun()
+        
+        # Updated logout button with proper handling
+        if st.button("Logout", use_container_width=True, type="primary"):
+            handle_logout()
+            
         st.divider()
         st.page_link("https://github.com/neon200/ZenithPlanner", label="View on GitHub", icon="⭐")
 
@@ -202,9 +227,12 @@ def show_login_page():
 
 def main():
     """Main application logic using cookies for persistent sessions."""
-    if 'token' not in cookies:
+    # Check if user is trying to logout (this handles the case where logout was clicked)
+    if 'token' not in cookies or cookies.get('token') is None:
         show_login_page()
-    else:
+        return
+    
+    try:
         token = json.loads(cookies['token'])
         
         if 'user' not in st.session_state:
@@ -219,7 +247,8 @@ def main():
                 st.session_state.db_user = dict(db_user)
             else:
                 st.error("Session is invalid. Please log in again.")
-                del cookies['token']
+                if 'token' in cookies:
+                    del cookies['token']
                 time.sleep(2)
                 st.rerun()
         
@@ -228,6 +257,15 @@ def main():
         else:
             # This can happen if the token was invalid and cleared.
             show_login_page()
+            
+    except (json.JSONDecodeError, KeyError, TypeError) as e:
+        # Handle corrupted token
+        st.error("Invalid session data. Please log in again.")
+        if 'token' in cookies:
+            del cookies['token']
+        st.session_state.clear()
+        time.sleep(2)
+        st.rerun()
 
 if __name__ == '__main__':
     main()
