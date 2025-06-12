@@ -82,7 +82,6 @@ class TaskManager:
         return self.agent.invoke(prompt_with_context, user_id, intent='create')
 
     def get_summary_from_agent(self, user_id: int) -> str:
-        # --- THE FIX 1: Update prompt with the final, precise section titles ---
         prompt = """
         Generate a concise and encouraging "Daily Summary".
         Your summary MUST follow these rules:
@@ -93,7 +92,6 @@ class TaskManager:
         5. Both lists must be sorted chronologically (earliest first).
         6. End with a short, motivational message.
         """
-        # --- END FIX 1 ---
         return self.agent.invoke(prompt, user_id, intent='summarize')
 
     def list_prioritized_tasks(self, user_id: int) -> list:
@@ -109,8 +107,15 @@ class TaskManager:
                     task_dict['time_left'] = due_time_obj - now_ist
                     prioritized_tasks.append(task_dict)
             else:
+                # This is a task with no due date
                 prioritized_tasks.append(task_dict)
-        prioritized_tasks.sort(key=lambda x: x.get('due_time', datetime.max.replace(tzinfo=pytz.UTC)))
+        
+        # --- THE FIX: Provide a valid datetime object for tasks with no due_time ---
+        # If x.get('due_time') is None, use a far-future date. This makes all items in the list comparable.
+        far_future_date = datetime.max.replace(tzinfo=pytz.UTC)
+        prioritized_tasks.sort(key=lambda x: x.get('due_time') or far_future_date)
+        # --- END FIX ---
+
         return prioritized_tasks
 
     def get_countdown_events(self, user_id: int) -> list:
@@ -141,19 +146,12 @@ class TaskManager:
         return f"Successfully created task titled '{title}'."
 
     def get_daily_summary_tasks(self, user_id: int) -> str:
-        """
-        Gets tasks for a daily summary:
-        - PENDING tasks in the next 24 hours.
-        - COMPLETED tasks since midnight today.
-        """
         all_tasks = self.db.get_tasks(user_id=user_id, completed=None)
         if not all_tasks: return "The user has no tasks at all."
         
-        # --- THE FIX 2: Use hybrid time boundaries ---
         now_ist = datetime.now(self.ist)
-        one_day_from_now = now_ist + timedelta(days=1) # For pending tasks
-        today_start = now_ist.replace(hour=0, minute=0, second=0, microsecond=0) # For completed tasks
-        # --- END FIX 2 ---
+        one_day_from_now = now_ist + timedelta(days=1)
+        today_start = now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
         
         pending_next_24h = []
         completed_today = []
@@ -163,18 +161,15 @@ class TaskManager:
 
             due_time = task['due_time'].astimezone(self.ist)
             
-            # Rule 1: Pending tasks from now until 24 hours from now
             if not task['is_completed'] and (now_ist <= due_time < one_day_from_now):
                 pending_next_24h.append(task)
             
-            # Rule 2: Completed tasks from the start of today until now
             elif task['is_completed'] and (today_start <= due_time < now_ist):
                  completed_today.append(task)
 
         pending_next_24h.sort(key=lambda x: x['due_time'])
         completed_today.sort(key=lambda x: x['due_time'])
         
-        # We'll build two separate tables for clarity for the agent
         pending_data = []
         for task in pending_next_24h:
             due_str = task['due_time'].astimezone(self.ist).strftime('%a, %b %d at %I:%M %p')
@@ -185,7 +180,6 @@ class TaskManager:
             due_str = task['due_time'].astimezone(self.ist).strftime('%I:%M %p')
             completed_data.append([task['title'], "Completed", due_str])
 
-        # Create formatted strings to send to the agent
         pending_table = "No tasks pending in the next 24 hours."
         if pending_data:
             pending_table = "Pending Tasks:\n" + tabulate(pending_data, headers=["Title", "Status", "Due"], tablefmt="grid")
