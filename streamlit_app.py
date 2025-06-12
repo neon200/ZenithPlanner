@@ -1,6 +1,11 @@
 # ZenithPlanner/streamlit_app.py
 
 import streamlit as st
+
+# --- This MUST be the first Streamlit command in the script ---
+st.set_page_config(page_title="ZenithPlanner", page_icon="🧠", layout="wide")
+
+# Import other libraries after set_page_config
 from streamlit_oauth import OAuth2Component
 from datetime import datetime
 import base64
@@ -9,14 +14,10 @@ import pytz
 import time
 from streamlit_cookies_manager import EncryptedCookieManager
 
-# Import your application's modules
+# Import your application's modules after set_page_config
 from config import GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, REDIRECT_URI, COOKIE_PASSWORD
 from task_manager import TaskManager
 from db.models import TaskDatabase
-
-
-# --- This MUST be the first Streamlit command in the script ---
-st.set_page_config(page_title="ZenithPlanner", page_icon="🧠", layout="wide")
 
 
 # --- Initialize Cookie Manager at the top ---
