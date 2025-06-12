@@ -233,15 +233,6 @@ def show_login_page():
     st.title("Welcome to ZenithPlanner 🧠")
     st.write("Your intelligent assistant to achieve peak productivity.")
     st.write("")
-    
-    # Add a button to clear any stuck auth state
-    if st.button("🔄 Reset Login State", help="Click if login is stuck"):
-        clear_all_auth_data()
-        st.success("Login state cleared! Try logging in again.")
-        time.sleep(1)
-        st.rerun()
-    
-    st.write("")
     _, col2, _ = st.columns([1, 2, 1])
     with col2:
         result = oauth2.authorize_button(
@@ -258,12 +249,6 @@ def show_login_page():
 
 def main():
     """Main application logic using a 'gated' approach for session management."""
-    
-    # --- Debug mode: Show current state (remove in production) ---
-    if st.checkbox("🔍 Debug Mode", help="Shows current authentication state"):
-        st.write("**Session State Keys:**", list(st.session_state.keys()))
-        st.write("**Cookie Keys:**", list(cookies.keys()) if cookies.ready() else "Cookies not ready")
-        st.write("**Query Params:**", dict(st.query_params))
     
     # --- Gate 1: Check for the OAuth redirect code from Google ---
     query_params = st.query_params
