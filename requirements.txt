@@ -12,4 +12,5 @@ SQLAlchemy
 langchain
 langchain-google-genai
 langchain-core
-langchainhub # Add this line
+langchainhub
+requests # Add this line

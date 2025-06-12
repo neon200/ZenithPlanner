@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 from dateutil.relativedelta import relativedelta
 import pytz
 from tabulate import tabulate
+import requests # Import the new library
 
 # --- LLM and Agent Imports ---
 from langchain import hub
@@ -74,11 +75,20 @@ class TaskManager:
     def add_task_from_natural_language(self, user_input: str, user_id: int) -> str:
         if not user_input: return "❌ Please enter a task description."
         
-        # --- THE FIX: Re-introduce time context in an unambiguous format ---
-        # This gets the correct current time in IST, whether running locally or on a UTC server.
-        now_in_ist = datetime.now(self.ist)
-        # Format it clearly for the LLM.
-        current_time_str = now_in_ist.strftime("%Y-%m-%d %H:%M:%S %Z") # e.g., "2024-06-13 19:30:00 IST"
+        # --- THE FIX: Call external API for authoritative time ---
+        try:
+            response = requests.get("https://timeapi.io/api/time/current/zone?timeZone=Asia/Kolkata")
+            response.raise_for_status()  # Raise an exception for bad status codes (4xx or 5xx)
+            time_data = response.json()
+            # The API gives a dateTime string like "2024-06-13T19:55:03.473432"
+            # We can parse this and format it nicely for the LLM
+            current_datetime_obj = datetime.fromisoformat(time_data['dateTime'])
+            current_time_str = current_datetime_obj.strftime("%A, %Y-%m-%d %H:%M:%S %Z")
+            print(f"✅ Successfully fetched time from API: {current_time_str}")
+        except requests.exceptions.RequestException as e:
+            print(f"❌ Could not fetch time from API: {e}. Falling back to system time.")
+            # Fallback to the previous method if the API fails
+            current_time_str = datetime.now(self.ist).strftime("%A, %Y-%m-%d %H:%M:%S %Z")
         
         prompt_with_context = f"Current time is {current_time_str}. User's request: '{user_input}'"
         # --- END FIX ---
