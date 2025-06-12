@@ -27,9 +27,6 @@ class CreateTaskArgs(BaseModel):
 
 # --- The Main Agent Class ---
 class ZenithAgent:
-    """
-    An agent that uses tools to interact with the ZenithPlanner system.
-    """
     def __init__(self, task_manager_instance):
         self.task_manager = task_manager_instance
         self.llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", google_api_key=GEMINI_API_KEY, temperature=0.1)
@@ -45,15 +42,14 @@ class ZenithAgent:
                 )
             tools.append(StructuredTool.from_function(
                 func=create_task_wrapper, name="create_task", args_schema=CreateTaskArgs,
-                description="Use this to create a new task. For relative dates like 'tomorrow', use the current date to calculate the correct absolute date."
+                description="Use this to create a new task. The current date and time are provided in the prompt for context, use this to calculate the correct absolute date for relative terms like 'today' or 'tomorrow'."
             ))
         elif intent == 'summarize':
             def get_daily_summary_tasks_wrapper():
                 return self.task_manager.get_daily_summary_tasks(user_id)
             tools.append(StructuredTool.from_function(
-                func=get_daily_summary_tasks_wrapper,
-                name="get_daily_summary_tasks",
-                description="Call this to get the user's tasks relevant for a daily summary. This includes tasks pending in the next 24 hours and tasks completed today. Use this data to create the report."
+                func=get_daily_summary_tasks_wrapper, name="get_daily_summary_tasks",
+                description="Call this to get the user's tasks for a daily summary report."
             ))
         agent = create_structured_chat_agent(self.llm, tools, self.prompt_template)
         return AgentExecutor(agent=agent, tools=tools, verbose=True, handle_parsing_errors=True)
@@ -77,8 +73,16 @@ class TaskManager:
 
     def add_task_from_natural_language(self, user_input: str, user_id: int) -> str:
         if not user_input: return "❌ Please enter a task description."
-        now_str = datetime.now(self.ist).strftime("%A, %Y-%m-%d")
-        prompt_with_context = f"Today is {now_str}. The user's request is: '{user_input}'"
+        
+        # --- THE FIX: Re-introduce time context in an unambiguous format ---
+        # This gets the correct current time in IST, whether running locally or on a UTC server.
+        now_in_ist = datetime.now(self.ist)
+        # Format it clearly for the LLM.
+        current_time_str = now_in_ist.strftime("%Y-%m-%d %H:%M:%S %Z") # e.g., "2024-06-13 19:30:00 IST"
+        
+        prompt_with_context = f"Current time is {current_time_str}. User's request: '{user_input}'"
+        # --- END FIX ---
+
         return self.agent.invoke(prompt_with_context, user_id, intent='create')
 
     def get_summary_from_agent(self, user_id: int) -> str:
@@ -107,15 +111,9 @@ class TaskManager:
                     task_dict['time_left'] = due_time_obj - now_ist
                     prioritized_tasks.append(task_dict)
             else:
-                # This is a task with no due date
                 prioritized_tasks.append(task_dict)
-        
-        # --- THE FIX: Provide a valid datetime object for tasks with no due_time ---
-        # If x.get('due_time') is None, use a far-future date. This makes all items in the list comparable.
         far_future_date = datetime.max.replace(tzinfo=pytz.UTC)
         prioritized_tasks.sort(key=lambda x: x.get('due_time') or far_future_date)
-        # --- END FIX ---
-
         return prioritized_tasks
 
     def get_countdown_events(self, user_id: int) -> list:
@@ -141,7 +139,7 @@ class TaskManager:
                 due_time_obj = datetime.fromisoformat(task_data['due_time']).astimezone(self.ist)
                 task_data['due_time'] = due_time_obj.isoformat()
             except (ValueError, TypeError):
-                return f"Error: The due_time '{task_data['due_time']}' is invalid. Please use ISO 8601 format."
+                return f"Error: The AI provided a due_time '{task_data['due_time']}' that could not be understood."
         self.db.add_task(task_data, user_id)
         return f"Successfully created task titled '{title}'."
 
@@ -158,12 +156,9 @@ class TaskManager:
 
         for task in all_tasks:
             if not task.get('due_time'): continue
-
             due_time = task['due_time'].astimezone(self.ist)
-            
             if not task['is_completed'] and (now_ist <= due_time < one_day_from_now):
                 pending_next_24h.append(task)
-            
             elif task['is_completed'] and (today_start <= due_time < now_ist):
                  completed_today.append(task)
 
