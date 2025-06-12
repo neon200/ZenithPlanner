@@ -1,14 +1,8 @@
 # ZenithPlanner/streamlit_app.py
 
 import streamlit as st
-
-# --- This MUST be the first Streamlit command ---
-st.set_page_config(page_title="ZenithPlanner", page_icon="🧠", layout="wide")
-
-# Now import everything else
 from streamlit_oauth import OAuth2Component
 from datetime import datetime
-from dateutil import parser
 import base64
 import json
 import pytz
@@ -21,12 +15,16 @@ from task_manager import TaskManager
 from db.models import TaskDatabase
 
 
-# --- Initialize Cookie Manager after page config ---
+# --- This MUST be the first Streamlit command in the script ---
+st.set_page_config(page_title="ZenithPlanner", page_icon="🧠", layout="wide")
+
+
+# --- Initialize Cookie Manager at the top ---
+# The st.cache warning you see comes from this library, it is safe to ignore.
 cookies = EncryptedCookieManager(
     password=COOKIE_PASSWORD,
 )
 if not cookies.ready():
-    # Wait for the cookie manager to be ready before continuing.
     st.stop()
 
 
@@ -70,34 +68,56 @@ def format_time_left(delta):
     if minutes > 0: return f"{minutes}m left"
     return "Due now"
 
+def clear_all_auth_data():
+    """Completely clear all authentication-related data"""
+    # Clear all session state
+    st.session_state.clear()
+    
+    # Clear all cookies
+    for key in list(cookies.keys()):
+        del cookies[key]
+    
+    # Force save cookie changes
+    cookies.save()
+    
+    # Clear query parameters
+    st.query_params.clear()
+
 def handle_logout():
-    """Handle logout process with proper cleanup"""
+    """Handle logout with proper cleanup and state management"""
     try:
-        # Clear all session state
-        for key in list(st.session_state.keys()):
-            del st.session_state[key]
-        
-        # Clear the cookie
-        if 'token' in cookies:
-            del cookies['token']
-        
-        # Force cookie manager to save changes
-        cookies.save()
-        
+        clear_all_auth_data()
         st.success("Logged out successfully!")
         time.sleep(1)
         st.rerun()
-        
     except Exception as e:
         st.error(f"Error during logout: {e}")
-        # Force clear everything anyway
-        st.session_state.clear()
+        # Force cleanup anyway
+        clear_all_auth_data()
         st.rerun()
+
+def is_token_valid(token_data):
+    """Check if the token is valid and not expired"""
+    try:
+        user_info = decode_id_token(token_data)
+        if not user_info:
+            return False
+        
+        # Check if token is expired
+        exp = user_info.get('exp', 0)
+        current_time = int(time.time())
+        
+        if exp <= current_time:
+            return False
+            
+        return True
+    except Exception:
+        return False
 
 
 # --- 3. MAIN APPLICATION UI ---
 def main_app(user):
-    # This function now correctly assumes the page config is already set at the top level.
+    # This function renders the main application UI for a logged-in user.
     if 'task_manager' not in st.session_state:
         db_instance = TaskDatabase()
         st.session_state.task_manager = TaskManager(db_instance)
@@ -111,7 +131,7 @@ def main_app(user):
         st.title(f"Welcome, {user.get('given_name', 'User')}!")
         st.info(f"Logged in as:\n_{user.get('email')}_")
         
-        # Updated logout button with proper handling
+        # Updated logout button
         if st.button("Logout", use_container_width=True, type="primary"):
             handle_logout()
             
@@ -212,6 +232,15 @@ def show_login_page():
     st.title("Welcome to ZenithPlanner 🧠")
     st.write("Your intelligent assistant to achieve peak productivity.")
     st.write("")
+    
+    # Add a button to clear any stuck auth state
+    if st.button("🔄 Reset Login State", help="Click if login is stuck"):
+        clear_all_auth_data()
+        st.success("Login state cleared! Try logging in again.")
+        time.sleep(1)
+        st.rerun()
+    
+    st.write("")
     _, col2, _ = st.columns([1, 2, 1])
     with col2:
         result = oauth2.authorize_button(
@@ -223,49 +252,109 @@ def show_login_page():
         )
         if result:
             cookies['token'] = json.dumps(result)
+            cookies.save()  # Force save immediately
             st.rerun()
 
 def main():
-    """Main application logic using cookies for persistent sessions."""
-    # Check if user is trying to logout (this handles the case where logout was clicked)
-    if 'token' not in cookies or cookies.get('token') is None:
+    """Main application logic using a 'gated' approach for session management."""
+    
+    # --- Debug mode: Show current state (remove in production) ---
+    if st.checkbox("🔍 Debug Mode", help="Shows current authentication state"):
+        st.write("**Session State Keys:**", list(st.session_state.keys()))
+        st.write("**Cookie Keys:**", list(cookies.keys()) if cookies.ready() else "Cookies not ready")
+        st.write("**Query Params:**", dict(st.query_params))
+    
+    # --- Gate 1: Check for the OAuth redirect code from Google ---
+    query_params = st.query_params
+    if "code" in query_params:
+        # This block only runs when the user is redirected back from Google.
+        with st.spinner("🔐 Completing login..."):
+            try:
+                code = query_params["code"]
+                # Clear any existing token first
+                if 'token' in cookies:
+                    del cookies['token']
+                
+                token = oauth2.fetch_token(
+                    token_url=TOKEN_URL, 
+                    code=code, 
+                    redirect_uri=REDIRECT_URI
+                )
+                
+                # Validate the token immediately
+                if not is_token_valid(token):
+                    st.error("Received invalid token from Google. Please try again.")
+                    clear_all_auth_data()
+                    st.rerun()
+                    return
+                
+                # Store the fetched token in the cookie.
+                cookies['token'] = json.dumps(token)
+                cookies.save()  # Force save
+                
+                # Clean the URL and rerun to enter the main app flow.
+                st.query_params.clear()
+                st.success("Login successful! Redirecting...")
+                time.sleep(1)
+                st.rerun()
+                
+            except Exception as e:
+                st.error(f"Error during login: {e}")
+                clear_all_auth_data()
+                time.sleep(2)
+                st.rerun()
+                return
+            
+    # --- Gate 2: Check for a valid token in the cookie ---
+    if 'token' not in cookies or not cookies['token']:
         show_login_page()
         return
-    
-    try:
-        token = json.loads(cookies['token'])
-        
-        if 'user' not in st.session_state:
-            user_info = decode_id_token(token)
+
+    # --- Gate 3: We have a token. Validate it and set up the session. ---
+    if 'user' not in st.session_state or 'db_user' not in st.session_state:
+        try:
+            token_from_cookie = json.loads(cookies['token'])
+            
+            # Validate token before using it
+            if not is_token_valid(token_from_cookie):
+                st.error("Your session has expired. Please log in again.")
+                clear_all_auth_data()
+                time.sleep(2)
+                st.rerun()
+                return
+            
+            user_info = decode_id_token(token_from_cookie)
+            
             if user_info:
+                # If token is valid, populate the session state.
                 st.session_state.user = user_info
                 db_instance = TaskDatabase()
                 db_user = db_instance.get_or_create_user(
-                    email=st.session_state.user['email'],
-                    name=st.session_state.user.get('name')
+                    email=user_info['email'],
+                    name=user_info.get('name')
                 )
                 st.session_state.db_user = dict(db_user)
             else:
-                st.error("Session is invalid. Please log in again.")
-                if 'token' in cookies:
-                    del cookies['token']
+                st.error("Failed to decode user information. Please log in again.")
+                clear_all_auth_data()
                 time.sleep(2)
                 st.rerun()
-        
-        if 'db_user' in st.session_state:
-            main_app(st.session_state.user)
-        else:
-            # This can happen if the token was invalid and cleared.
-            show_login_page()
-            
-    except (json.JSONDecodeError, KeyError, TypeError) as e:
-        # Handle corrupted token
-        st.error("Invalid session data. Please log in again.")
-        if 'token' in cookies:
-            del cookies['token']
-        st.session_state.clear()
-        time.sleep(2)
-        st.rerun()
+                return
+                
+        except (json.JSONDecodeError, KeyError, TypeError) as e:
+            st.error("Invalid session data. Please log in again.")
+            clear_all_auth_data()
+            time.sleep(2)
+            st.rerun()
+            return
+    
+    # --- Final Gate: If we have a valid user in the session, show the app ---
+    if 'db_user' in st.session_state and 'user' in st.session_state:
+        main_app(st.session_state.user)
+    else:
+        # Fallback: if something went wrong, show the login page.
+        show_login_page()
+
 
 if __name__ == '__main__':
     main()
