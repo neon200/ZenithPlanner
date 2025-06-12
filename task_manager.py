@@ -1,294 +1,203 @@
 # ZenithPlanner/task_manager.py
 
 from datetime import datetime, timedelta
-from dateutil import parser
 from dateutil.relativedelta import relativedelta
 import pytz
-from llm_utils import parse_task_with_gemini
+from tabulate import tabulate
 
+# --- LLM and Agent Imports ---
+from langchain import hub
+from pydantic import BaseModel, Field
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain.tools import StructuredTool
+from langchain.agents import AgentExecutor, create_structured_chat_agent
+from config import GEMINI_API_KEY
+
+
+# --- Agent Pydantic Schema ---
+class CreateTaskArgs(BaseModel):
+    """Input schema for the create_task tool."""
+    title: str = Field(description="A concise title for the task.")
+    due_time: str | None = Field(description="The deadline in strict ISO 8601 format (YYYY-MM-DDTHH:MM:SS). If no specific time or date is found, this MUST be null.")
+    category: str = Field(description="A concise category that best fits the task (e.g., 'Work', 'Health', 'Personal', 'Finance', 'Meeting'). Default to 'Others'.")
+    is_recurring: bool = Field(description="true if the task repeats (birthdays, anniversaries, daily/weekly/monthly tasks), otherwise false.", default=False)
+    repeat_pattern: str | None = Field(description="Pattern like 'daily', 'weekly', 'monthly', 'yearly'. MUST be 'yearly' for birthdays/anniversaries. null if not recurring.", default=None)
+    user_notes: str | None = Field(description="Any extra details from the user. null if none.", default=None)
+
+
+# --- The Main Agent Class ---
+class ZenithAgent:
+    """
+    An agent that uses tools to interact with the ZenithPlanner system.
+    """
+    def __init__(self, task_manager_instance):
+        self.task_manager = task_manager_instance
+        self.llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", google_api_key=GEMINI_API_KEY, temperature=0.1)
+        self.prompt_template = hub.pull("hwchase17/structured-chat-agent")
+        print("✅ Self-contained Gemini AI agent loaded in TaskManager.")
+
+    def _create_agent_executor(self, user_id: int, intent: str):
+        tools = []
+        if intent == 'create':
+            def create_task_wrapper(title: str, due_time: str | None, category: str, is_recurring: bool, repeat_pattern: str | None, user_notes: str | None):
+                return self.task_manager.create_task_from_agent(
+                    user_id, title, due_time, category, is_recurring, repeat_pattern, user_notes
+                )
+            tools.append(StructuredTool.from_function(
+                func=create_task_wrapper, name="create_task", args_schema=CreateTaskArgs,
+                description="Use this to create a new task. For relative dates like 'tomorrow', use the current date to calculate the correct absolute date."
+            ))
+        elif intent == 'summarize':
+            def get_daily_summary_tasks_wrapper():
+                return self.task_manager.get_daily_summary_tasks(user_id)
+            tools.append(StructuredTool.from_function(
+                func=get_daily_summary_tasks_wrapper,
+                name="get_daily_summary_tasks",
+                description="Call this to get the user's tasks relevant for a daily summary. This includes tasks pending in the next 24 hours and tasks completed today. Use this data to create the report."
+            ))
+        agent = create_structured_chat_agent(self.llm, tools, self.prompt_template)
+        return AgentExecutor(agent=agent, tools=tools, verbose=True, handle_parsing_errors=True)
+
+    def invoke(self, user_input_with_context: str, user_id: int, intent: str):
+        try:
+            agent_executor = self._create_agent_executor(user_id, intent)
+            response = agent_executor.invoke({"input": user_input_with_context, "chat_history": []})
+            return response.get('output', "AI Error: No response generated.")
+        except Exception as e:
+            print(f"❌ Agent Invocation Error: {e}")
+            return "AI Error: An unexpected error occurred. Please check the logs."
+
+
+# --- The Main TaskManager Class ---
 class TaskManager:
-    """
-    The central business logic unit of ZenithPlanner.
-    It connects the UI, the database, and the LLM.
-    """
     def __init__(self, db_connection):
-        """Initializes the TaskManager with a database connection instance."""
         self.db = db_connection
-        # Always use IST timezone
         self.ist = pytz.timezone('Asia/Kolkata')
+        self.agent = ZenithAgent(task_manager_instance=self)
 
     def add_task_from_natural_language(self, user_input: str, user_id: int) -> str:
+        if not user_input: return "❌ Please enter a task description."
+        now_str = datetime.now(self.ist).strftime("%A, %Y-%m-%d")
+        prompt_with_context = f"Today is {now_str}. The user's request is: '{user_input}'"
+        return self.agent.invoke(prompt_with_context, user_id, intent='create')
+
+    def get_summary_from_agent(self, user_id: int) -> str:
+        # --- THE FIX 1: Update prompt with the final, precise section titles ---
+        prompt = """
+        Generate a concise and encouraging "Daily Summary".
+        Your summary MUST follow these rules:
+        1. Create a "Tasks Pending in Next 24 Hours" section. List all pending tasks.
+        2. Create a "Tasks Completed Today" section. List all completed tasks.
+        3. For each pending task, format it as: `* {Task Title} ({Date} at {Time})`. For example: `* Breakfast (Thu, Jun 13 at 08:00 AM)`.
+        4. For each completed task, format it as: `* {Task Title} (at {Time})`.
+        5. Both lists must be sorted chronologically (earliest first).
+        6. End with a short, motivational message.
         """
-        Processes natural language input, parses it with the LLM, and adds it to the database.
-        """
-        if not user_input:
-            return "❌ Please enter a task description."
-
-        parsed_data = parse_task_with_gemini(user_input)
-        
-        if "error" in parsed_data:
-            return f"❌ AI Error: {parsed_data['error']}"
-        
-        if not parsed_data.get("title"):
-            return "❌ AI Error: The AI could not determine a title for your task. Please try rephrasing."
-
-        # Ensure due_time is properly timezone-aware for IST
-        if parsed_data.get('due_time'):
-            try:
-                # Parse the time string
-                due_time_obj = datetime.fromisoformat(parsed_data['due_time'])
-                
-                # If it's naive (no timezone), assume it's IST
-                if due_time_obj.tzinfo is None:
-                    due_time_obj = self.ist.localize(due_time_obj)
-                else:
-                    # Convert to IST if it's in a different timezone
-                    due_time_obj = due_time_obj.astimezone(self.ist)
-                
-                # Update the parsed data with timezone-aware datetime
-                parsed_data['due_time'] = due_time_obj.isoformat()
-                
-            except Exception as e:
-                print(f"⚠️ Error processing due_time: {e}")
-                # If there's an error, remove the due_time rather than storing invalid data
-                parsed_data['due_time'] = None
-
-        self.db.add_task(parsed_data, user_id)
-        
-        # Create a user-friendly confirmation message
-        title = parsed_data.get('title')
-        due_info = ""
-        if parsed_data.get('due_time'):
-            try:
-                due_obj = datetime.fromisoformat(parsed_data['due_time'].replace('Z', '+00:00'))
-                if due_obj.tzinfo:
-                    due_obj = due_obj.astimezone(self.ist)
-                due_info = f" scheduled for {due_obj.strftime('%A, %B %d at %I:%M %p IST')}"
-            except:
-                pass
-        
-        return f"✅ Task '{title}'{due_info} added successfully."
+        # --- END FIX 1 ---
+        return self.agent.invoke(prompt, user_id, intent='summarize')
 
     def list_prioritized_tasks(self, user_id: int) -> list:
-        """
-        Retrieves all incomplete tasks for a user and sorts them based on urgency.
-        All times are handled in IST.
-        """
         tasks = self.db.get_tasks(user_id=user_id, completed=False)
         now_ist = datetime.now(self.ist)
-        
-        due_tasks = []
-        no_due_date_tasks = []
-        
+        one_day_from_now = now_ist + timedelta(days=1)
+        prioritized_tasks = []
         for task in tasks:
             task_dict = dict(task)
-            if self._is_event(task_dict):
-                continue
-            
             if task_dict.get('due_time'):
-                try:
-                    due_time_obj = task_dict['due_time']
-                    
-                    # Ensure the datetime is timezone-aware and in IST
-                    if due_time_obj.tzinfo is None:
-                        due_time_obj = self.ist.localize(due_time_obj)
-                    else:
-                        due_time_obj = due_time_obj.astimezone(self.ist)
-
-                    # Handle yearly recurring events
-                    if self._is_yearly_recurring_event(task_dict) and due_time_obj < now_ist:
-                        next_year = due_time_obj + relativedelta(years=1)
-                        task_dict['due_time'] = next_year
-                        self.db.update_task_due_time(task_dict['id'], user_id, next_year.isoformat())
-                        due_time_obj = next_year
-                    
+                due_time_obj = task_dict['due_time'].astimezone(self.ist)
+                if due_time_obj <= one_day_from_now:
                     task_dict['time_left'] = due_time_obj - now_ist
-                    due_tasks.append(task_dict)
-                    
-                except (parser.ParserError, TypeError, ValueError) as e:
-                    print(f"⚠️ Error parsing task due_time for task {task_dict.get('id', 'unknown')}: {e}")
-                    no_due_date_tasks.append(task_dict)
+                    prioritized_tasks.append(task_dict)
             else:
-                no_due_date_tasks.append(task_dict)
-        
-        # Sort by urgency (least time left first)
-        due_tasks.sort(key=lambda x: x['time_left'])
-        return due_tasks + no_due_date_tasks
-
-    def _is_yearly_recurring_event(self, task_dict: dict) -> bool:
-        """Determines if a task is a yearly recurring event like birthdays."""
-        title_lower = task_dict.get('title', '').lower()
-        category_lower = task_dict.get('category', '').lower()
-        birthday_keywords = ['birthday', 'bday', 'b-day', 'born']
-        yearly_keywords = ['anniversary', 'wedding', 'graduation day']
-        
-        return any(keyword in title_lower for keyword in birthday_keywords + yearly_keywords) or \
-               'personal' in category_lower and any(keyword in title_lower for keyword in birthday_keywords)
-
-    def _is_event(self, task_dict: dict) -> bool:
-        """Determines if a task is an event for countdown purposes."""
-        title_lower = task_dict.get('title', '').lower()
-        category_lower = task_dict.get('category', '').lower()
-        event_keywords = [
-            'birthday', 'bday', 'b-day', 'exam', 'test', 'meeting', 'appointment', 'funeral', 
-            'wedding', 'anniversary', 'interview', 'presentation', 'conference', 'seminar', 
-            'graduation', 'party', 'celebration', 'ceremony', 'event', 'show', 'concert', 
-            'game', 'match', 'vacation', 'trip', 'holiday', 'festival', 'outing', 'gathering', 'reunion'
-        ]
-        event_categories = [
-            'event', 'meeting', 'appointment', 'celebration', 'entertainment',
-            'travel', 'social', 'ceremony', 'exam', 'interview'
-        ]
-        is_event = any(keyword in title_lower for keyword in event_keywords) or \
-                   any(keyword in category_lower for keyword in event_categories)
-        return is_event
+                prioritized_tasks.append(task_dict)
+        prioritized_tasks.sort(key=lambda x: x.get('due_time', datetime.max.replace(tzinfo=pytz.UTC)))
+        return prioritized_tasks
 
     def get_countdown_events(self, user_id: int) -> list:
-        """Gets events (not regular tasks) for countdown display. All times in IST."""
-        all_tasks = self.db.get_tasks(user_id=user_id, completed=False)
+        tasks = self.db.get_tasks(user_id=user_id, completed=False)
         now_ist = datetime.now(self.ist)
-        events = []
-        
-        for task in all_tasks:
+        one_day_from_now = now_ist + timedelta(days=1)
+        countdown_tasks = []
+        for task in tasks:
             task_dict = dict(task)
-            if task_dict.get('due_time') and self._is_event(task_dict):
-                try:
-                    due_time_obj = task_dict['due_time']
-
-                    # Ensure timezone awareness in IST
-                    if due_time_obj.tzinfo is None:
-                        due_time_obj = self.ist.localize(due_time_obj)
-                    else:
-                        due_time_obj = due_time_obj.astimezone(self.ist)
-                    
-                    # Handle yearly recurring events
-                    if self._is_yearly_recurring_event(task_dict) and due_time_obj < now_ist:
-                        next_year = due_time_obj + relativedelta(years=1)
-                        task_dict['due_time'] = next_year
-                        self.db.update_task_due_time(task_dict['id'], user_id, next_year.isoformat())
-                        due_time_obj = next_year
-                    
+            if task_dict.get('due_time'):
+                due_time_obj = task_dict['due_time'].astimezone(self.ist)
+                if due_time_obj > one_day_from_now:
                     task_dict['time_left'] = due_time_obj - now_ist
-                    events.append(task_dict)
-                    
-                except (parser.ParserError, TypeError, ValueError) as e:
-                    print(f"⚠️ Error parsing event due_time: {e}")
-                    continue
+                    countdown_tasks.append(task_dict)
+        countdown_tasks.sort(key=lambda x: x['due_time'])
+        return countdown_tasks
+
+    def create_task_from_agent(self, user_id: int, title: str, due_time: str | None, category: str, is_recurring: bool, repeat_pattern: str | None, user_notes: str | None) -> str:
+        task_data = locals()
+        task_data.pop('self'); task_data.pop('user_id')
+        if task_data.get('due_time'):
+            try:
+                due_time_obj = datetime.fromisoformat(task_data['due_time']).astimezone(self.ist)
+                task_data['due_time'] = due_time_obj.isoformat()
+            except (ValueError, TypeError):
+                return f"Error: The due_time '{task_data['due_time']}' is invalid. Please use ISO 8601 format."
+        self.db.add_task(task_data, user_id)
+        return f"Successfully created task titled '{title}'."
+
+    def get_daily_summary_tasks(self, user_id: int) -> str:
+        """
+        Gets tasks for a daily summary:
+        - PENDING tasks in the next 24 hours.
+        - COMPLETED tasks since midnight today.
+        """
+        all_tasks = self.db.get_tasks(user_id=user_id, completed=None)
+        if not all_tasks: return "The user has no tasks at all."
         
-        events.sort(key=lambda x: x['time_left'])
-        return events
+        # --- THE FIX 2: Use hybrid time boundaries ---
+        now_ist = datetime.now(self.ist)
+        one_day_from_now = now_ist + timedelta(days=1) # For pending tasks
+        today_start = now_ist.replace(hour=0, minute=0, second=0, microsecond=0) # For completed tasks
+        # --- END FIX 2 ---
+        
+        pending_next_24h = []
+        completed_today = []
+
+        for task in all_tasks:
+            if not task.get('due_time'): continue
+
+            due_time = task['due_time'].astimezone(self.ist)
+            
+            # Rule 1: Pending tasks from now until 24 hours from now
+            if not task['is_completed'] and (now_ist <= due_time < one_day_from_now):
+                pending_next_24h.append(task)
+            
+            # Rule 2: Completed tasks from the start of today until now
+            elif task['is_completed'] and (today_start <= due_time < now_ist):
+                 completed_today.append(task)
+
+        pending_next_24h.sort(key=lambda x: x['due_time'])
+        completed_today.sort(key=lambda x: x['due_time'])
+        
+        # We'll build two separate tables for clarity for the agent
+        pending_data = []
+        for task in pending_next_24h:
+            due_str = task['due_time'].astimezone(self.ist).strftime('%a, %b %d at %I:%M %p')
+            pending_data.append([task['title'], "Pending", due_str])
+        
+        completed_data = []
+        for task in completed_today:
+            due_str = task['due_time'].astimezone(self.ist).strftime('%I:%M %p')
+            completed_data.append([task['title'], "Completed", due_str])
+
+        # Create formatted strings to send to the agent
+        pending_table = "No tasks pending in the next 24 hours."
+        if pending_data:
+            pending_table = "Pending Tasks:\n" + tabulate(pending_data, headers=["Title", "Status", "Due"], tablefmt="grid")
+
+        completed_table = "No tasks completed today."
+        if completed_data:
+            completed_table = "Completed Tasks:\n" + tabulate(completed_data, headers=["Title", "Status", "Time"], tablefmt="grid")
+            
+        return f"{pending_table}\n\n{completed_table}"
 
     def mark_task_complete(self, task_id: int, user_id: int):
-        """
-        Marks a task as complete. If the task is recurring, it resets it for the
-        next occurrence instead of marking it permanently complete.
-        """
-        task = self.db.get_task_by_id(task_id, user_id)
-        if not task:
-            return "Task not found."
-            
-        if task['is_recurring'] and task['due_time']:
-            current_due_time = task['due_time']
-            
-            # Ensure timezone awareness
-            if current_due_time.tzinfo is None:
-                current_due_time = self.ist.localize(current_due_time)
-            else:
-                current_due_time = current_due_time.astimezone(self.ist)
-                
-            pattern = task['repeat_pattern'].lower() if task['repeat_pattern'] else ''
-            next_due_time = None
-
-            if 'daily' in pattern:
-                next_due_time = current_due_time + relativedelta(days=1)
-            elif 'weekly' in pattern:
-                next_due_time = current_due_time + relativedelta(weeks=1)
-            elif 'monthly' in pattern:
-                next_due_time = current_due_time + relativedelta(months=1)
-            elif 'yearly' in pattern:
-                next_due_time = current_due_time + relativedelta(years=1)
-
-            if next_due_time:
-                self.db.reset_recurring_task(task_id, user_id, next_due_time.isoformat())
-                return f"Task '{task['title']}' completed for today. Next one scheduled for {next_due_time.strftime('%A, %B %d at %I:%M %p IST')}."
-        
         self.db.update_task_status(task_id, user_id, is_completed=True)
-        return f"Task '{task['title']}' marked as complete."
     
     def delete_task(self, task_id: int, user_id: int):
-        """Deletes a task for the specified user."""
         self.db.delete_task(task_id, user_id)
-        return f"Task ID {task_id} has been deleted."
-
-    def get_daily_summary(self, user_id: int):
-        """Generates a comprehensive daily summary for the user. All times handled in IST."""
-        all_tasks = self.db.get_tasks(user_id=user_id, completed=None)
-        
-        completed_tasks = [dict(t) for t in all_tasks if t['is_completed']]
-        pending_tasks = [dict(t) for t in all_tasks if not t['is_completed'] and not self._is_event(dict(t))]
-        
-        total_tasks = len(completed_tasks) + len(pending_tasks)
-        completion_rate = round((len(completed_tasks) / total_tasks * 100) if total_tasks > 0 else 0)
-        
-        now_ist = datetime.now(self.ist)
-        today = now_ist.date()
-        urgent_tasks = []
-        overdue_tasks = []
-        
-        for task in pending_tasks:
-            if task.get('due_time'):
-                try:
-                    due_time_obj = task['due_time']
-                    
-                    # Ensure timezone awareness
-                    if due_time_obj.tzinfo is None:
-                        due_time_obj = self.ist.localize(due_time_obj)
-                    else:
-                        due_time_obj = due_time_obj.astimezone(self.ist)
-                    
-                    time_diff = due_time_obj - now_ist
-                    if time_diff.total_seconds() < 0:
-                        overdue_tasks.append(task)
-                    elif time_diff.total_seconds() < 86400:  # 24 hours
-                        urgent_tasks.append(task)
-                        
-                except Exception as e:
-                    print(f"⚠️ Error processing task time in summary: {e}")
-                    pass
-        
-        summary_data = [
-            {'type': 'header', 'content': f"Daily Productivity Report - {today.strftime('%A, %B %d, %Y')} (IST)"},
-            {'type': 'metric', 'completed': len(completed_tasks), 'pending': len(pending_tasks), 'completion_rate': completion_rate}
-        ]
-        
-        if overdue_tasks:
-            summary_data.extend([
-                {'type': 'subheader', 'content': f"🚨 Overdue Tasks ({len(overdue_tasks)})"},
-                {'type': 'pending_list', 'tasks': overdue_tasks}
-            ])
-            
-        if urgent_tasks:
-            summary_data.extend([
-                {'type': 'subheader', 'content': f"⚡ Urgent Tasks (Due within 24 hours)"},
-                {'type': 'pending_list', 'tasks': urgent_tasks}
-            ])
-            
-        summary_data.extend([
-            {'type': 'subheader', 'content': f"✅ Completed Tasks ({len(completed_tasks)})"},
-            {'type': 'completed_list', 'tasks': completed_tasks}
-        ])
-        
-        # Motivational message based on completion rate
-        if completion_rate >= 80: 
-            motivation_msg = "Outstanding work! You're crushing your goals! 🔥🎯"
-        elif completion_rate >= 60: 
-            motivation_msg = "Great progress! Keep up the excellent work! 💪✨"
-        elif completion_rate >= 40: 
-            motivation_msg = "Good effort! You're on the right track. Stay focused! 🚀📈"
-        elif completion_rate >= 20: 
-            motivation_msg = "Every step counts! Let's tackle those tasks together! 🤝💼"
-        else: 
-            motivation_msg = "Don't worry, every expert was once a beginner! Let's start small and build momentum! 🌱💪"
-        
-        summary_data.append({'type': 'motivation', 'content': motivation_msg})
-        return summary_data

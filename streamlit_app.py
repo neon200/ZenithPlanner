@@ -14,22 +14,13 @@ from config import GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, REDIRECT_URI
 from task_manager import TaskManager
 from db.models import TaskDatabase
 
-# --- 1. AUTHENTICATION AND CONFIGURATION ---
-
+# --- 1. AUTHENTICATION AND CONFIGURATION (Unchanged) ---
 AUTHORIZE_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 SCOPE = "openid https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile"
+oauth2 = OAuth2Component(client_id=GOOGLE_CLIENT_ID, client_secret=GOOGLE_CLIENT_SECRET, authorize_endpoint=AUTHORIZE_URL, token_endpoint=TOKEN_URL)
 
-# Create an OAuth2Component instance
-oauth2 = OAuth2Component(
-    client_id=GOOGLE_CLIENT_ID,
-    client_secret=GOOGLE_CLIENT_SECRET,
-    authorize_endpoint=AUTHORIZE_URL,
-    token_endpoint=TOKEN_URL,
-)
-
-# --- 2. HELPER FUNCTIONS (No changes here) ---
-
+# --- 2. HELPER FUNCTIONS (Unchanged) ---
 def render_dynamic_time_header():
     ist = pytz.timezone('Asia/Kolkata')
     now_ist = datetime.now(ist)
@@ -53,20 +44,16 @@ def decode_id_token(token_dict):
 
 def format_time_left(delta):
     if delta.total_seconds() < 0:
-        return "Overdue by " + str(abs(delta)).split('.')[0]
+        return "Overdue"
     days = delta.days
     hours, rem = divmod(delta.seconds, 3600)
     minutes, _ = divmod(rem, 60)
-    if days > 1: return f"{days} days left"
-    if days == 1: return "1 day left"
-    parts = []
-    if hours > 0: parts.append(f"{hours} hour{'s' if hours > 1 else ''}")
-    if minutes > 0: parts.append(f"{minutes} min{'s' if minutes > 1 else ''}")
-    if not parts: return "Due now"
-    return " ".join(parts) + " left"
+    if days > 0: return f"{days}d left"
+    if hours > 0: return f"{hours}h left"
+    if minutes > 0: return f"{minutes}m left"
+    return "Due now"
 
-# --- 3. MAIN APPLICATION UI (No changes here) ---
-
+# --- 3. MAIN APPLICATION UI (Refactored) ---
 def main_app(user):
     st.set_page_config(page_title="ZenithPlanner", page_icon="🧠", layout="wide")
     
@@ -97,7 +84,10 @@ def main_app(user):
         if submitted and user_input:
             with st.spinner("🤖 Analyzing and adding your task..."):
                 result = manager.add_task_from_natural_language(user_input, db_user_id)
-                st.toast(result, icon="✅" if "✅" in result else "❌")
+                is_success = "error" not in result.lower()
+                st.toast(result, icon="✅" if is_success else "❌")
+                time.sleep(1) 
+                st.rerun()
 
     st.divider()
     col1, col2 = st.columns([2, 1])
@@ -106,7 +96,7 @@ def main_app(user):
         st.header("📋 Your Prioritized Tasks")
         tasks = manager.list_prioritized_tasks(db_user_id)
         if not tasks:
-            st.info("No pending tasks. Add one above to get started!", icon="🎉")
+            st.info("No urgent tasks! Check the countdown list for future items.", icon="🎉")
         else:
             for task in tasks:
                 with st.container(border=True):
@@ -124,11 +114,9 @@ def main_app(user):
                             meta_info.append(f"🗓️ *Due: {due_date_str}*")
                             if 'time_left' in task:
                                 time_left_str = format_time_left(task['time_left'])
-                                color = "green" if "left" in time_left_str else "orange" if "Due" in time_left_str else "red"
+                                color = "red" if "Overdue" in time_left_str else "orange"
                                 meta_info.append(f"<span style='color:{color}'>**⏳ {time_left_str}**</span>")
                         st.markdown(" | ".join(meta_info), unsafe_allow_html=True)
-                        if task.get('user_notes'):
-                            st.caption(f"📝 {task['user_notes']}")
                     with c3:
                         if st.button("🗑️", key=f"delete_{task['id']}", help="Delete task"):
                             manager.delete_task(task['id'], db_user_id)
@@ -136,69 +124,48 @@ def main_app(user):
                             st.rerun()
 
     with col2:
-        st.header("⏳ Dashboards")
-        with st.container(border=True):
-            st.subheader("Countdown Events")
-            countdown_events = manager.get_countdown_events(db_user_id)
-            if not countdown_events:
-                st.write("No upcoming events.")
-            else:
-                for event in countdown_events:
-                    with st.container():
-                        c1, c2 = st.columns([0.85, 0.15])
-                        with c1:
-                            st.metric(
-                                label=f"{event['title']} ({event['category']})",
-                                value=format_time_left(event['time_left']),
-                                delta=f"Due: {event['due_time'].astimezone(pytz.timezone('Asia/Kolkata')).strftime('%b %d, %I:%M %p')}",
-                                delta_color="off"
-                            )
-                        with c2:
-                            if st.button("🗑️", key=f"delete_event_{event['id']}", help="Delete event"):
-                                manager.delete_task(event['id'], db_user_id)
-                                st.toast(f"Deleted '{event['title']}'")
-                                st.rerun()
+        st.header("⏳ Countdown Events")
+        countdown_events = manager.get_countdown_events(db_user_id)
+        if not countdown_events:
+            st.write("No long-term events scheduled.")
+        else:
+            for event in countdown_events:
+                 with st.container(border=True):
+                    # --- THE FIX: Use columns to add a delete button ---
+                    metric_col, button_col = st.columns([0.85, 0.15])
+                    with metric_col:
+                        st.metric(
+                            label=f"{event['title']} ({event['category']})",
+                            value=format_time_left(event['time_left']),
+                            delta=f"Due: {event['due_time'].astimezone(pytz.timezone('Asia/Kolkata')).strftime('%b %d, %Y')}",
+                            delta_color="off"
+                        )
+                    with button_col:
+                        # Add a top margin to better align the button with the metric
+                        st.markdown('<div style="margin-top: 25px;"></div>', unsafe_allow_html=True)
+                        if st.button("🗑️", key=f"delete_event_{event['id']}", help="Delete event"):
+                            manager.delete_task(event['id'], db_user_id)
+                            st.toast(f"Deleted event '{event['title']}'")
+                            st.rerun()
+                    # --- END FIX ---
 
     st.divider()
-    st.header("📊 End-of-Day Digest")
-    col_summary1, col_summary2 = st.columns([1, 4])
-    with col_summary1:
-        if st.button("Generate Daily Summary", use_container_width=True, type="primary"):
-            st.session_state.show_summary = True
-    with col_summary2:
+    st.header("📊 AI-Powered Digest")
+    
+    if st.button("Generate Summary", use_container_width=True, type="primary"):
+        with st.spinner("🤖 Your AI assistant is preparing the summary..."):
+            summary_text = manager.get_summary_from_agent(db_user_id)
+            st.session_state.summary_text = summary_text
+    
+    if 'summary_text' in st.session_state:
+        with st.container(border=True):
+            st.markdown(st.session_state.summary_text)
         if st.button("Clear Summary", use_container_width=True):
-            st.session_state.show_summary = False
-    if st.session_state.get('show_summary', False):
-        with st.spinner("🤖 Generating your comprehensive daily summary..."):
-            summary_data = manager.get_daily_summary(db_user_id)
-            with st.container(border=True):
-                st.markdown("### 📈 Your Daily Productivity Report")
-                for section in summary_data:
-                    if section['type'] == 'header': st.markdown(f"## {section['content']}")
-                    elif section['type'] == 'subheader': st.markdown(f"### {section['content']}")
-                    elif section['type'] == 'metric':
-                        c1, c2, c3 = st.columns(3)
-                        with c1: st.metric("Completed Today", section['completed'])
-                        with c2: st.metric("Pending Tasks", section['pending'])
-                        with c3: st.metric("Completion Rate", f"{section['completion_rate']}%")
-                    elif section['type'] == 'completed_list':
-                        if section['tasks']:
-                            st.markdown("**✅ Tasks Completed Today:**")
-                            for task in section['tasks']: st.markdown(f"• **{task['title']}** ({task['category']})")
-                        else: st.info("No tasks completed today yet. Keep going!")
-                    elif section['type'] == 'pending_list':
-                        if section['tasks']:
-                            st.markdown("**📋 Tasks Still Pending:**")
-                            for task in section['tasks']:
-                                due_info = ""
-                                if task.get('due_time'): due_info = f" - Due: {task['due_time'].astimezone(pytz.timezone('Asia/Kolkata')).strftime('%b %d, %I:%M %p')}"
-                                st.markdown(f"• **{task['title']}** ({task['category']}){due_info}")
-                        else: st.success("🎉 All tasks completed! You're on fire!")
-                    elif section['type'] == 'motivation':
-                        st.markdown("---"); st.markdown(f"### 🎯 {section['content']}")
+            del st.session_state.summary_text
+            st.rerun()
 
-# --- 4. LOGIN AND ROUTING LOGIC (No changes here) ---
 
+# --- 4. LOGIN AND ROUTING LOGIC (Unchanged) ---
 def show_login_page():
     st.set_page_config(page_title="ZenithPlanner Login", layout="centered")
     st.markdown("""<style>div[data-testid="stVerticalBlock"] div[data-testid="stButton"] button {width: 100%; height: 50px; font-size: 20px;}</style>""", unsafe_allow_html=True)

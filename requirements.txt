@@ -9,3 +9,7 @@ streamlit-oauth
 pytz
 psycopg2-binary
 SQLAlchemy
+langchain
+langchain-google-genai
+langchain-core
+langchainhub # Add this line
