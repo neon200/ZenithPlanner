@@ -129,7 +129,3 @@ class TaskDatabase:
         """Deletes a task."""
         query = "DELETE FROM tasks WHERE id = :task_id AND user_id = :user_id"
         self._execute_query(query, {"task_id": task_id, "user_id": user_id})
-
-# This line is no longer necessary as db_instance is created inside the app
-# db_instance = TaskDatabase() 
-# print("✅ Cloud database model loaded.")
