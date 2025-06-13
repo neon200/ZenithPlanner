@@ -145,7 +145,7 @@ def main_app(user):
         user_input = st.text_input("Describe your task:", placeholder="e.g., 'Submit project proposal by Friday at 5 PM'")
         submitted = st.form_submit_button("Add Task", use_container_width=True, type="primary")
         if submitted and user_input:
-            with st.spinner("🤖 Analyzing and adding your task..."):
+            with st.spinner("🤖 Analyzing your task..."):
                 result = manager.add_task_from_natural_language(user_input, db_user_id)
                 # Store the result in session state instead of a temporary toast
                 st.session_state.add_task_result = result
