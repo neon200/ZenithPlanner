@@ -20,10 +20,7 @@ from task_manager import TaskManager
 from db.models import TaskDatabase
 
 
-# --- Initialize Cookie Manager at the top ---
-# NOTE: The st.cache deprecation warning comes from the streamlit-cookies-manager
-# library itself. It is an external issue and can be safely monitored until the
-# library developer updates to st.cache_data or st.cache_resource.
+# Initialize the encrypted cookie manager with the provided password
 cookies = EncryptedCookieManager(
     password=COOKIE_PASSWORD,
 )
