@@ -150,10 +150,21 @@ def main_app(user):
         if submitted and user_input:
             with st.spinner("🤖 Analyzing and adding your task..."):
                 result = manager.add_task_from_natural_language(user_input, db_user_id)
-                is_success = "error" not in result.lower()
-                st.toast(result, icon="✅" if is_success else "❌")
-                time.sleep(1) 
+                # Store the result in session state instead of a temporary toast
+                st.session_state.add_task_result = result
+                # No need for sleep, just rerun to show the message and update the list
                 st.rerun()
+
+    # --- START OF CHANGE ---
+    # Display the result of the last task addition permanently below the form
+    if 'add_task_result' in st.session_state:
+        result_message = st.session_state.add_task_result
+        is_success = "error" not in result_message.lower()
+        if is_success:
+            st.success(f"**AI Assistant:** {result_message}", icon="🤖")
+        else:
+            st.error(f"**AI Assistant:** {result_message}", icon="❌")
+    # --- END OF CHANGE ---
 
     st.divider()
     col1, col2 = st.columns([2, 1])
