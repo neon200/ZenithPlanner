@@ -187,9 +187,9 @@ ZenithPlanner/
 We welcome contributions! Here's how you can help:
 
 1. **Fork** the repository
-2. **Create** a feature branch (`git checkout -b feature/amazing-feature`)
-3. **Commit** your changes (`git commit -m 'Add amazing feature'`)
-4. **Push** to the branch (`git push origin feature/amazing-feature`)
+2. **Create** a feature branch (`git checkout -b feature/new-feature`)
+3. **Commit** your changes (`git commit -m 'Add new feature'`)
+4. **Push** to the branch (`git push origin feature/new-feature`)
 5. **Open** a Pull Request
 
 ### Development Guidelines
@@ -197,26 +197,6 @@ We welcome contributions! Here's how you can help:
 - Add comments for complex logic
 - Test your changes thoroughly
 - Update documentation as needed
-
-## 📝 License
-
-This project is open source and available under the [MIT License](LICENSE).
-
-## 🐛 Issues & Support
-
-- **Bug Reports**: [GitHub Issues](https://github.com/neon200/ZenithPlanner/issues)
-- **Feature Requests**: [GitHub Discussions](https://github.com/neon200/ZenithPlanner/discussions)
-- **Documentation**: Check this README and code comments
-
-## 🎯 Roadmap
-
-- [ ] Mobile app development
-- [ ] Calendar integration (Google Calendar, Outlook)
-- [ ] Team collaboration features
-- [ ] Advanced analytics dashboard
-- [ ] Multiple timezone support
-- [ ] Voice input for task creation
-- [ ] Integration with popular productivity tools
 
 ## 👨‍💻 About the Developer
 
